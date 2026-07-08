@@ -48,6 +48,7 @@ fun LibraryScreen(
     libraryRootUri: Uri?,
     currentTrackUriString: String?,
     isPlaying: Boolean,
+    isBusy: Boolean = false,
     onTrackClick: (Track) -> Unit,
     onCreateFolder: (String, Uri?) -> Unit,
     onMoveTrack: (Track, Uri?) -> Unit,
@@ -67,6 +68,7 @@ fun LibraryScreen(
     val subfolders = folders.filter { it.parentUri == effectiveHere }.sortedBy { it.name.lowercase() }
     val tracksHere = tracks.filter { it.parentUri == effectiveHere }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier.fillMaxSize().background(Color.Black)
     ) {
@@ -187,6 +189,21 @@ fun LibraryScreen(
                 }
             }
         }
+    }
+
+    // Busy overlay: a real disk operation (create/delete folder, move track)
+    // is running in the background - a spinner here reads as "working" so a
+    // slow SAF op doesn't look like the app just froze.
+    if (isBusy) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.35f)),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = Violet)
+        }
+    }
     }
 
     if (showNewFolderDialog) {

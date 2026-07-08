@@ -12,6 +12,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
+import android.widget.Toast
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -86,6 +88,12 @@ class MainActivity : ComponentActivity() {
     // LibraryFileOps), and this list is simply re-read from disk afterwards.
     private val libraryFoldersState = mutableStateOf<List<LibraryFolder>>(emptyList())
 
+    // True while a real disk operation (scan, create/delete folder, move track)
+    // is running on a background thread - drives a small loading overlay in
+    // LibraryScreen so a slow SAF op (e.g. copy-fallback on a big file) reads
+    // as "working" instead of "frozen/broken".
+    private val libraryBusyState = mutableStateOf(false)
+
     private val downloadBusy = mutableStateOf(false)
     private val downloadStatus = mutableStateOf("")
     private val downloadProgress = mutableFloatStateOf(0f)
@@ -151,8 +159,11 @@ class MainActivity : ComponentActivity() {
         }.start()
 
         folderUriState.value = Prefs.getMusicFolder(this)
-        rescanTracks()
-        restoreLastTrack()
+        // Initial scan runs off the main thread now - restoreLastTrack needs
+        // tracksState to actually be filled first, so it runs as the
+        // completion callback instead of right after (it used to run
+        // immediately against an empty list because the scan was sync before).
+        rescanTracks { restoreLastTrack() }
 
         setContent { NightWaveRoot() }
     }
@@ -180,19 +191,24 @@ class MainActivity : ComponentActivity() {
      *  what's on disk (creating/deleting a folder, moving a track, a
      *  download landing in the folder) calls this afterwards so the UI
      *  reflects reality. */
-    private fun rescanTracks() {
+    private fun rescanTracks(onComplete: () -> Unit = {}) {
         val folder = folderUriState.value ?: return
-        val contents = MusicScanner.scanLibrary(this, folder)
-        libraryFoldersState.value = contents.folders
+        libraryBusyState.value = true
+        lifecycleScope.launch {
+            val contents = withContext(Dispatchers.IO) { MusicScanner.scanLibrary(this@MainActivity, folder) }
+            libraryFoldersState.value = contents.folders
 
-        val order = Prefs.getTrackOrder(this)
-        tracksState.value = if (order.isNotEmpty()) {
-            val byUri = contents.tracks.associateBy { it.uri.toString() }
-            val known = order.mapNotNull { byUri[it] }
-            val unknown = contents.tracks.filter { it.uri.toString() !in order }
-            known + unknown
-        } else {
-            contents.tracks
+            val order = Prefs.getTrackOrder(this@MainActivity)
+            tracksState.value = if (order.isNotEmpty()) {
+                val byUri = contents.tracks.associateBy { it.uri.toString() }
+                val known = order.mapNotNull { byUri[it] }
+                val unknown = contents.tracks.filter { it.uri.toString() !in order }
+                known + unknown
+            } else {
+                contents.tracks
+            }
+            libraryBusyState.value = false
+            onComplete()
         }
     }
 
@@ -211,8 +227,12 @@ class MainActivity : ComponentActivity() {
      *  library root if null), then rescans so the new real folder shows up. */
     private fun createLibraryFolder(name: String, parentUri: Uri?) {
         val root = folderUriState.value ?: return
-        LibraryFileOps.createFolder(this, root, parentUri, name)
-        rescanTracks()
+        libraryBusyState.value = true
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) { LibraryFileOps.createFolder(this@MainActivity, root, parentUri, name) }
+            if (!ok) Toast.makeText(this@MainActivity, "Ordner konnte nicht erstellt werden.", Toast.LENGTH_SHORT).show()
+            rescanTracks()
+        }
     }
 
     /** Really moves the track's underlying file on disk into [targetFolderUri]
@@ -222,8 +242,12 @@ class MainActivity : ComponentActivity() {
     private fun moveTrackToFolder(track: Track, targetFolderUri: Uri?) {
         val root = folderUriState.value ?: return
         val target = targetFolderUri ?: root
-        LibraryFileOps.moveDocument(this, track.uri, track.parentUri, target)
-        rescanTracks()
+        libraryBusyState.value = true
+        lifecycleScope.launch {
+            val moved = withContext(Dispatchers.IO) { LibraryFileOps.moveDocument(this@MainActivity, track.uri, track.parentUri, target) }
+            if (moved == null) Toast.makeText(this@MainActivity, "Verschieben fehlgeschlagen.", Toast.LENGTH_SHORT).show()
+            rescanTracks()
+        }
     }
 
     /** Really deletes a folder from disk. To match the friendly "nothing
@@ -236,16 +260,18 @@ class MainActivity : ComponentActivity() {
         val folders = libraryFoldersState.value
         val target = folders.find { it.uri == folderUri } ?: return
         val newParent = target.parentUri
+        val childFolders = folders.filter { it.parentUri == folderUri }
+        val childTracks = tracksState.value.filter { it.parentUri == folderUri }
 
-        folders.filter { it.parentUri == folderUri }.forEach { child ->
-            LibraryFileOps.moveDocument(this, child.uri, folderUri, newParent)
+        libraryBusyState.value = true
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                childFolders.forEach { child -> LibraryFileOps.moveDocument(this@MainActivity, child.uri, folderUri, newParent) }
+                childTracks.forEach { track -> LibraryFileOps.moveDocument(this@MainActivity, track.uri, folderUri, newParent) }
+                LibraryFileOps.deleteFolder(this@MainActivity, folderUri)
+            }
+            rescanTracks()
         }
-        tracksState.value.filter { it.parentUri == folderUri }.forEach { track ->
-            LibraryFileOps.moveDocument(this, track.uri, folderUri, newParent)
-        }
-
-        LibraryFileOps.deleteFolder(this, folderUri)
-        rescanTracks()
     }
 
     private fun setupVisualizer(sessionId: Int) {
@@ -509,6 +535,7 @@ class MainActivity : ComponentActivity() {
                                 libraryRootUri = folderUriState.value,
                                 currentTrackUriString = currentTrackUri,
                                 isPlaying = isPlaying,
+                                isBusy = libraryBusyState.value,
                                 onTrackClick = { track ->
                                     val idx = tracks.indexOf(track)
                                     if (idx == currentIndex) {
