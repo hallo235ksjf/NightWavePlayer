@@ -79,6 +79,14 @@ class MainActivity : ComponentActivity() {
     private val titleState = mutableStateOf("Kein Titel geladen")
     private val tracksState = mutableStateOf<List<Track>>(emptyList())
     private val currentIndexState = mutableIntStateOf(-1)
+
+    // The parentUri of whatever folder the *current* playback queue is
+    // scoped to. playNext()/playPrev() only skip within tracks that share
+    // this parentUri - this is what keeps skipping inside the folder you
+    // started playback from, instead of wandering into the whole library.
+    // Set every time playback is (re-)started from a specific track/folder
+    // (playFolder, a Library track click, restoreLastTrack).
+    private val currentQueueParentUriState = mutableStateOf<Uri?>(null)
     private val folderUriState = mutableStateOf<Uri?>(null)
 
     // Real, on-disk library folders - populated by recursively scanning the
@@ -364,6 +372,7 @@ class MainActivity : ComponentActivity() {
         if (tracks.isEmpty()) return
         val lastUri = Prefs.getLastTrackUri(this)
         val idx = tracks.indexOfFirst { it.uri.toString() == lastUri }.let { if (it >= 0) it else 0 }
+        currentQueueParentUriState.value = tracks[idx].parentUri
         playTrackAt(idx, autoPlay = false)
     }
 
@@ -382,21 +391,51 @@ class MainActivity : ComponentActivity() {
         }
         val tracks = tracksState.value
         val idx = tracks.indexOfFirst { it.parentUri in descendantUris }
-        if (idx >= 0) playTrackAt(idx) else Toast.makeText(this, "Dieser Ordner enthält keine Songs.", Toast.LENGTH_SHORT).show()
+        if (idx >= 0) {
+            currentQueueParentUriState.value = tracks[idx].parentUri
+            playTrackAt(idx)
+        } else {
+            Toast.makeText(this, "Dieser Ordner enthält keine Songs.", Toast.LENGTH_SHORT).show()
+        }
     }
+
+    /** Global indices (into tracksState) of the tracks that share the active
+     *  queue's folder, in the same order the library/tracksState keeps them.
+     *  This is what playNext()/playPrev() skip through - never the whole
+     *  library - so skipping can't carry you out of the folder you started
+     *  playback from. */
+    private fun currentQueueIndices(tracks: List<Track>): List<Int> =
+        tracks.indices.filter { tracks[it].parentUri == currentQueueParentUriState.value }
 
     private fun playNext() {
         val tracks = tracksState.value
         if (tracks.isEmpty()) return
-        val next = (currentIndexState.intValue + 1).let { if (it >= tracks.size) 0 else it }
-        playTrackAt(next)
+        val queue = currentQueueIndices(tracks)
+        if (queue.isEmpty()) {
+            // Safety net: current track's folder has no (more) tracks in it
+            // (e.g. it got moved/deleted from under us) - fall back to the
+            // full library rather than getting stuck.
+            val next = (currentIndexState.intValue + 1).let { if (it >= tracks.size) 0 else it }
+            playTrackAt(next)
+            return
+        }
+        val pos = queue.indexOf(currentIndexState.intValue)
+        val nextPos = if (pos == -1) 0 else (pos + 1) % queue.size
+        playTrackAt(queue[nextPos])
     }
 
     private fun playPrev() {
         val tracks = tracksState.value
         if (tracks.isEmpty()) return
-        val prev = (currentIndexState.intValue - 1).let { if (it < 0) tracks.size - 1 else it }
-        playTrackAt(prev)
+        val queue = currentQueueIndices(tracks)
+        if (queue.isEmpty()) {
+            val prev = (currentIndexState.intValue - 1).let { if (it < 0) tracks.size - 1 else it }
+            playTrackAt(prev)
+            return
+        }
+        val pos = queue.indexOf(currentIndexState.intValue)
+        val prevPos = if (pos == -1) 0 else (pos - 1 + queue.size) % queue.size
+        playTrackAt(queue[prevPos])
     }
 
     private fun downloadFromYoutube(query: String, scope: kotlinx.coroutines.CoroutineScope) {
@@ -579,6 +618,7 @@ class MainActivity : ComponentActivity() {
                                     if (idx == currentIndex) {
                                         if (player.isPlaying) player.pause() else player.play()
                                     } else {
+                                        currentQueueParentUriState.value = track.parentUri
                                         playTrackAt(idx)
                                     }
                                     // jump straight to the player - no extra manual step needed
