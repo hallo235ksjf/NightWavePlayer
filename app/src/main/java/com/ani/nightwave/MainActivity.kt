@@ -94,6 +94,13 @@ class MainActivity : ComponentActivity() {
     // as "working" instead of "frozen/broken".
     private val libraryBusyState = mutableStateOf(false)
 
+    // Which real folder the Library screen is currently browsing - hoisted
+    // here (instead of local remember state inside LibraryScreen) so it
+    // survives leaving/re-entering the Library (e.g. tapping a track jumps
+    // to the Player screen, which used to unmount LibraryScreen and reset
+    // this back to root every time).
+    private val currentLibraryFolderState = mutableStateOf<Uri?>(null)
+
     private val downloadBusy = mutableStateOf(false)
     private val downloadStatus = mutableStateOf("")
     private val downloadProgress = mutableFloatStateOf(0f)
@@ -483,6 +490,7 @@ class MainActivity : ComponentActivity() {
                 )
                 Prefs.setMusicFolder(this, it)
                 folderUriState.value = it
+                currentLibraryFolderState.value = null
                 rescanTracks()
             }
         }
@@ -564,6 +572,8 @@ class MainActivity : ComponentActivity() {
                                 currentTrackUriString = currentTrackUri,
                                 isPlaying = isPlaying,
                                 isBusy = libraryBusyState.value,
+                                currentFolderUri = currentLibraryFolderState.value,
+                                onFolderChange = { currentLibraryFolderState.value = it },
                                 onTrackClick = { track ->
                                     val idx = tracks.indexOf(track)
                                     if (idx == currentIndex) {

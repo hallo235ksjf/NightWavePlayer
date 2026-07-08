@@ -49,6 +49,8 @@ fun LibraryScreen(
     currentTrackUriString: String?,
     isPlaying: Boolean,
     isBusy: Boolean = false,
+    currentFolderUri: Uri?,
+    onFolderChange: (Uri?) -> Unit,
     onTrackClick: (Track) -> Unit,
     onCreateFolder: (String, Uri?) -> Unit,
     onPlayFolder: (LibraryFolder) -> Unit,
@@ -58,7 +60,6 @@ fun LibraryScreen(
     onPickFolder: () -> Unit,
     onBack: () -> Unit
 ) {
-    var currentFolderUri by remember { mutableStateOf<Uri?>(null) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var moveDialogTrack by remember { mutableStateOf<Track?>(null) }
     var deleteDialogFolder by remember { mutableStateOf<LibraryFolder?>(null) }
@@ -83,7 +84,7 @@ fun LibraryScreen(
                 IconButton(onClick = {
                     if (currentFolderUri != null) {
                         val parent = currentFolder?.parentUri
-                        currentFolderUri = if (parent == null || parent == libraryRootUri) null else parent
+                        onFolderChange(if (parent == null || parent == libraryRootUri) null else parent)
                     } else {
                         onBack()
                     }
@@ -146,7 +147,7 @@ fun LibraryScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { currentFolderUri = folder.uri }
+                            .clickable { onFolderChange(folder.uri) }
                             .padding(horizontal = 20.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
